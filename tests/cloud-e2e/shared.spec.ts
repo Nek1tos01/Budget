@@ -1,0 +1,191 @@
+import { expect, test, type Page } from '@playwright/test'
+
+const panel = (page: Page) => page.getByRole('dialog')
+const budget = (page: Page) => page.getByRole('heading', { name: 'Бюджет', exact: true })
+const spent = (page: Page) => page.locator('.hero-metrics > div').first()
+const nav = (page: Page, name: string) => page.getByRole('navigation').getByRole('button', { name, exact: true })
+
+async function create(page: Page) {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Создать общий бюджет' }).click()
+  await panel(page).getByLabel('Имя участника').fill('Анна')
+  await panel(page).getByLabel('Название бюджета').fill('Бюджет вдвоём')
+  await panel(page).getByRole('button', { name: 'Создать', exact: true }).click()
+  await expect(panel(page).getByRole('heading', { name: 'Код восстановления' })).toBeVisible({ timeout: 12_000 })
+  const recoveryCode = await panel(page).locator('.cloud-recovery output').textContent()
+  await panel(page).getByRole('button', { name: 'Готово' }).click()
+  await expect(page.locator('.budget-head h1')).toHaveText('Бюджет')
+  return recoveryCode ?? ''
+}
+
+async function add(page: Page, amount: string, note: string) {
+  await page.getByRole('button', { name: 'Добавить операцию', exact: true }).click()
+  await panel(page).getByRole('button', { name: /^Расход(?:\s|$)/ }).click()
+  await panel(page).getByRole('textbox', { name: 'Сумма' }).fill(amount)
+  await panel(page).getByRole('textbox', { name: 'Комментарий' }).fill(note)
+  await panel(page).getByRole('button', { name: 'Добавить', exact: true }).click()
+  await expect(panel(page)).toHaveCount(0)
+}
+
+async function invitation(page: Page) {
+  await panel(page).getByRole('button', { name: 'Пригласить' }).click()
+  const link = await panel(page).getByLabel('Ссылка-приглашение').inputValue()
+  await panel(page).getByRole('button', { name: 'Закрыть' }).click()
+  return link
+}
+
+async function join(phone: Page, link: string) {
+  await phone.goto(link)
+  await expect(phone).not.toHaveURL(/#invite=/)
+  await panel(phone).getByLabel('Имя участника').fill('Борис')
+  await panel(phone).getByRole('button', { name: 'Присоединиться', exact: true }).click()
+  await panel(phone).getByRole('button', { name: 'Готово' }).click()
+  await panel(phone).getByRole('button', { name: 'Закрыть' }).click()
+  await expect(budget(phone)).toBeVisible()
+}
+
+test('два независимых устройства, офлайн-перезапуск и отправка очереди', async ({ context, page, browser, baseURL }) => {
+  await create(page)
+  const link = await invitation(page)
+  const other = await browser.newContext({ baseURL, isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 }, timezoneId: 'America/New_York', locale: 'ru-RU' })
+  try {
+    const phone = await other.newPage()
+    await join(phone, link)
+    await add(page, '500', 'Покупка Анны')
+    await expect(spent(phone)).toContainText(/500\s*₽/, { timeout: 28_000 })
+    await add(phone, '800', 'Покупка Бориса')
+    await expect(spent(page)).toContainText(/1\s300\s*₽/, { timeout: 28_000 })
+    await expect(spent(phone)).toContainText(/1\s300\s*₽/)
+    expect(await page.locator('.period-arrows > span').textContent()).toBe(await phone.locator('.period-arrows > span').textContent())
+    await expect(page.locator('.hero-number')).toHaveText(/18\s700\s*₽/)
+    await expect(phone.locator('.hero-number')).toHaveText(/18\s700\s*₽/)
+
+    await expect.poll(() => phone.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true)
+    await other.setOffline(true)
+    await add(phone, '200', 'Покупка без сети')
+    await expect(phone.locator('.cloud-indicator')).toHaveAccessibleName(/Нет сети|очереди/i)
+    await phone.reload()
+    await expect(spent(phone)).toContainText(/1\s500\s*₽/)
+    await other.setOffline(false)
+    await expect(spent(page)).toContainText(/1\s500\s*₽/, { timeout: 28_000 })
+    await nav(phone, 'Операции').click()
+    await phone.getByRole('textbox', { name: 'Поиск операций' }).fill('Покупка без сети')
+    const saved = phone.getByRole('button', { name: /Покупка без сети/ })
+    await expect(saved).toHaveCount(1)
+    await saved.click()
+    await expect(panel(phone).getByText('Добавил')).toBeVisible()
+    await expect(panel(phone).getByText('Борис').last()).toBeVisible()
+    const cookies = await context.cookies()
+    expect(cookies.some(cookie => cookie.name === 'budget_session' && cookie.httpOnly && cookie.path === '/api/v1')).toBe(true)
+    await panel(phone).getByRole('button', { name: 'Закрыть' }).click()
+    await phone.locator('.cloud-indicator').click()
+    await panel(phone).getByRole('button', { name: 'Покинуть бюджет' }).click()
+    await panel(phone).getByRole('button', { name: 'Подтвердить выход из общего бюджета' }).click()
+    await expect(panel(phone)).toHaveCount(0)
+    await expect(phone.getByRole('button', { name: 'Создать общий бюджет' })).toBeVisible()
+    expect((await phone.request.get('/api/v1/session')).status()).toBe(401)
+  } finally { await other.close() }
+})
+
+test('чек из офлайн-очереди появляется на двух устройствах с точными копейками', async ({ page, browser, baseURL }) => {
+  await create(page)
+  const link = await invitation(page)
+  const other = await browser.newContext({ baseURL, isMobile: true, hasTouch: true, viewport: { width: 390, height: 844 }, timezoneId: 'America/New_York', locale: 'ru-RU' })
+  try {
+    const phone = await other.newPage()
+    await join(phone, link)
+    await nav(page, 'Настройки').click()
+    const ownerRound = page.getByRole('switch', { name: 'Округлять суммы чеков вверх' })
+    await expect(ownerRound).not.toBeChecked()
+    await ownerRound.click()
+    await expect(ownerRound).toBeChecked()
+    await nav(phone, 'Настройки').click()
+    const partnerRound = phone.getByRole('switch', { name: 'Округлять суммы чеков вверх' })
+    await expect(partnerRound).toBeChecked({ timeout: 28_000 })
+    await nav(page, 'Бюджет').click()
+    await nav(phone, 'Бюджет').click()
+    await expect.poll(() => phone.evaluate(() => !!navigator.serviceWorker.controller)).toBe(true)
+    await other.setOffline(true)
+    await phone.getByRole('button', { name: 'Добавить операцию', exact: true }).click()
+    await panel(phone).getByRole('button', { name: /^Чек(?:\s|$)/ }).click()
+    await panel(phone).getByRole('button', { name: 'Ввести данные вручную' }).click()
+    await panel(phone).getByLabel('Магазин', { exact: true }).fill('Чек без сети')
+    await panel(phone).getByLabel('Итог чека, ₽', { exact: true }).fill('348,75')
+    await panel(phone).getByRole('button', { name: 'Выбрать категорию расхода' }).click()
+    await panel(phone).getByRole('button', { name: /Продукты/ }).click()
+    await panel(phone).getByRole('button', { name: 'Применить', exact: true }).click()
+    await panel(phone).getByRole('button', { name: 'Сохранить чек', exact: true }).click()
+    await expect(panel(phone).getByRole('button', { name: 'Посмотреть в истории' })).toBeVisible()
+    await expect(spent(page)).toContainText(/0\s*₽/)
+    await phone.reload()
+    await expect(spent(phone)).toContainText(/348,75\s*₽/)
+    await expect(phone.locator('.cloud-indicator')).toHaveAccessibleName(/Нет сети|очереди/i)
+    const sent = phone.waitForResponse(response => response.url().endsWith('/api/v1/sync/mutate') && response.ok())
+    await other.setOffline(false)
+    const synced = await sent
+    const request = synced.request()
+    const change = request.postDataJSON()
+    expect(change.kind).toBe('receipt')
+    expect(change.value.total).toBe(34_875)
+    expect(change.value.budgetAmount).toBeUndefined()
+    const headers = request.headers()
+    const retry = await phone.request.post('/api/v1/sync/mutate', {
+      data: change,
+      headers: { Origin: new URL(synced.url()).origin, 'X-Budget-Household': headers['x-budget-household'], 'X-Budget-Member': headers['x-budget-member'] },
+    })
+    expect(retry.status()).toBe(200)
+    expect(await retry.json()).toEqual(await synced.json())
+    await expect(spent(page)).toContainText(/348,75\s*₽/, { timeout: 28_000 })
+    await expect(spent(phone)).toContainText(/348,75\s*₽/)
+    for (const device of [page, phone]) {
+      await nav(device, 'Операции').click()
+      await expect(device.getByRole('button', { name: /Чек без сети/ })).toHaveCount(1)
+    }
+  } finally { await other.close() }
+})
+
+test('подтверждённый перенос сохраняет финансовый результат и локальную копию', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Открыть демо-бюджет' }).click()
+  await expect(budget(page)).toBeVisible()
+  const before = await spent(page).textContent()
+  await nav(page, 'Настройки').click()
+  await page.getByRole('button', { name: 'Общий бюджет', exact: true }).click()
+  await panel(page).getByRole('button', { name: 'Перенести текущий бюджет в общий' }).click()
+  await panel(page).getByLabel('Имя участника').fill('Владелец')
+  await expect(panel(page).getByRole('button', { name: 'Создать', exact: true })).toBeDisabled()
+  await panel(page).getByRole('checkbox').check()
+  await panel(page).getByRole('button', { name: 'Создать', exact: true }).click()
+  await expect(panel(page).getByRole('heading', { name: 'Код восстановления' })).toBeVisible({ timeout: 12_000 })
+  await panel(page).getByRole('button', { name: 'Готово' }).click()
+  await panel(page).getByRole('button', { name: 'Закрыть' }).click()
+  await expect(page.locator('.cloud-indicator')).toHaveAccessibleName('Синхронизировано', { timeout: 30_000 })
+  await expect(page.locator('.cloud-indicator')).toHaveAttribute('data-status', 'synced')
+  await expect(page.locator('.cloud-indicator')).toHaveText('')
+  await nav(page, 'Бюджет').click()
+  await expect(spent(page)).toHaveText(before!)
+  await page.locator('.cloud-indicator').click()
+  await panel(page).getByRole('button', { name: 'Выйти из бюджета' }).click()
+  await expect(panel(page)).toHaveCount(0)
+  await expect(spent(page)).toHaveText(before!)
+  await expect(page.locator('.cloud-indicator')).toHaveCount(0)
+})
+
+
+
+test('восстановление профиля подтверждает новый код после сохранения', async ({ page }) => {
+  const recoveryCode = await create(page)
+  await panel(page).getByRole('button', { name: 'Выйти из бюджета' }).click()
+  await expect(panel(page)).toHaveCount(0)
+  await page.getByRole('button', { name: 'Восстановить доступ', exact: true }).click()
+  await panel(page).getByLabel('Код восстановления', { exact: true }).fill(recoveryCode)
+  await panel(page).getByRole('button', { name: 'Восстановить', exact: true }).click()
+  await expect(panel(page).locator('.cloud-recovery output')).toBeVisible({ timeout: 12_000 })
+  expect(await panel(page).locator('.cloud-recovery output').textContent() === recoveryCode).toBe(false)
+  await expect(panel(page).getByRole('button', { name: 'Закрыть' })).toBeDisabled()
+  await panel(page).getByRole('button', { name: 'Готово' }).click()
+  await expect(panel(page).locator('.cloud-recovery')).toHaveCount(0)
+  await panel(page).getByRole('button', { name: 'Закрыть' }).click()
+  await expect(budget(page)).toBeVisible()
+  await expect(page.locator('.cloud-indicator')).toHaveAccessibleName('Синхронизировано')
+})

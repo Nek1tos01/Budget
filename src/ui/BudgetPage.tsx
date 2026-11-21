@@ -1,10 +1,13 @@
 import { useRef } from 'react'
-import { Activity, ArrowUpRight, CalendarDays, ChevronRight, LayoutGrid, Plus, UsersRound, Wallet } from 'lucide-react'
+import { Activity, ArrowUpRight, CalendarDays, ChevronRight, LayoutGrid, Plus, Wallet } from 'lucide-react'
 import { AnimatePresence, motion, useReducedMotion } from 'motion/react'
 import { engine, labelDay, labelPeriod, labelMonth, money, toDay, usageLabel, weekdaysReset } from '../domain/engine'
+import { effectiveCategoryLimit } from '../domain/limit-transfers'
 import type { Category, PeriodKind, Snapshot, Transaction } from '../domain/models'
 import { CategoryIcon, ChangeBadge, Empty, Money, MoneyText, OperationRow, PeriodArrows, Progress, Ring, Segmented, screenTransition } from './shared'
 import { Trend } from './charts'
+import { ReceiptHistoryRow } from './Operations'
+import { ForecastCard } from './ForecastCard'
 
 export const periodItems = [['week', 'Неделя'], ['month', 'Месяц']] as const
 
@@ -17,10 +20,10 @@ export function useBudgetPeriod(data: Snapshot, now: number, kind: PeriodKind, o
   return { today, period, summary, get }
 }
 
-export function BudgetPage({ data, now, kind, offset, changeKind, changeOffset, openWeek, openCategory, openCategories, openHistory, openOperation, openMembers, add }: {
+export function BudgetPage({ data, now, kind, offset, changeKind, changeOffset, openWeek, openCategory, openCategories, openHistory, openOperation, add }: {
   data: Snapshot; now: number; kind: PeriodKind; offset: number; changeKind: (kind: PeriodKind) => void; changeOffset: (offset: number) => void
   openWeek: () => void; openCategory: (category: Category) => void; openCategories: () => void
-  openHistory: () => void; openMembers: () => void; openOperation: (row: Transaction) => void; add: () => void
+  openHistory: () => void; openOperation: (row: Transaction) => void; add: () => void
 }) {
   const reduceMotion = useReducedMotion()
   const { today, period, summary, get } = useBudgetPeriod(data, now, kind, offset)
@@ -31,7 +34,17 @@ export function BudgetPage({ data, now, kind, offset, changeKind, changeOffset, 
   const other = get(alternate)
   const otherSummary = engine.summary(data.transactions, other, budget[alternate])
   const active = data.categories.filter(category => !category.archived)
-  const recent = data.transactions.slice(0, 4)
+  const receipts = new Map(data.receipts?.map(receipt => [receipt.id, receipt]))
+  const recent = []
+  const seenReceipts = new Set<string>()
+  for (const row of data.transactions) {
+    if (row.receiptId && receipts.has(row.receiptId)) {
+      if (seenReceipts.has(row.receiptId)) continue
+      seenReceipts.add(row.receiptId)
+    }
+    recent.push(row)
+    if (recent.length === 4) break
+  }
   const touch = useRef<{ x: number; y: number } | null>(null)
   const trend = Array.from({ length: 5 }, (_, i) => {
     const index = offset + i - 4
@@ -43,7 +56,6 @@ export function BudgetPage({ data, now, kind, offset, changeKind, changeOffset, 
       <div><button className="reset-chip" type="button" onClick={openWeek} title={'Обновление ' + labelDay(weekReset, true)}><CalendarDays size={15}/> Сброс {weekdaysReset[settings.weekStart - 1]} <ChevronRight size={14}/></button>
         <h1>Бюджет</h1></div>
       <button className="primary desktop-add" onClick={add}><Plus size={19}/> Добавить операцию</button>
-      <button className="icon-button mobile-top" onClick={openMembers} aria-label="Участники"><UsersRound size={20}/></button>
     </header>
     <div className="period-toolbar">
       <Segmented items={periodItems} value={kind} onChange={changeKind} label="Вид бюджета"/>
@@ -69,11 +81,17 @@ export function BudgetPage({ data, now, kind, offset, changeKind, changeOffset, 
                   <strong className={`hero-number ${summary.remaining < 0 ? 'negative' : ''}`}><Money value={summary.remaining}/></strong>
                   <span className="hero-description">{summary.remaining < 0 ? 'Расходы превысили лимит' : 'Доступно до ' + labelDay(period.end, true)}</span>
                 </div><Ring summary={summary}/>
+                <div className="hero-progress"><Progress summary={summary}/><strong>{usageLabel(summary)}</strong></div>
               </div>
-              <div className="hero-metrics"><div><span>Потрачено</span><strong><MoneyText text={money(summary.spent)}/></strong></div><div><span>Общий лимит</span><strong><MoneyText text={money(summary.limit)}/></strong></div></div>
+              <div className="hero-metrics"><div>
+                <span>{summary.actualSpent !== undefined && summary.actualSpent !== summary.spent ? 'Учтено в бюджете' : 'Потрачено'}</span>
+                <strong><MoneyText text={money(summary.spent)}/></strong>
+                {summary.actualSpent !== undefined && summary.actualSpent !== summary.spent && <span>Фактические расходы {money(summary.actualSpent)}</span>}
+              </div><div><span>Общий лимит</span><strong><MoneyText text={money(summary.limit)}/></strong></div></div>
             </motion.section>
           </AnimatePresence>
         </div>
+        {offset === 0 && <ForecastCard rows={data.transactions} period={period} today={today} limit={summary.limit}/>}
         <button className="alternate" type="button" onClick={() => changeKind(alternate)}>
           <span className="mini-icon purple"><CalendarDays size={21}/></span>
           <span className="alternate-main"><span className="alternate-title">{alternate === 'month' ? 'Бюджет на месяц' : 'Бюджет на неделю'}</span>
@@ -93,14 +111,20 @@ export function BudgetPage({ data, now, kind, offset, changeKind, changeOffset, 
         <section>
           <div className="section-head"><h2>Категории</h2><button className="text-button" onClick={openCategories}>Все <ChevronRight size={16}/></button></div>
           {active.length ? <div className="panel grouped">
-            {active.slice(0, 5).map(category => <CategoryRow key={category.id} category={category} summary={engine.summary(data.transactions.filter(row => row.categoryId === category.id), period, category.limits[kind])}
+            {active.slice(0, 5).map(category => <CategoryRow key={category.id} category={category} summary={engine.summary(
+              data.transactions.filter(row => row.categoryId === category.id), period, effectiveCategoryLimit(category, period, data.limitTransfers))}
               onClick={() => openCategory(category)}/>)}
           </div> : <div className="panel"><Empty title="Нет категорий" text="Создайте категорию, чтобы учитывать расходы."><button className="secondary" onClick={openCategories}><LayoutGrid size={17}/> Категории</button></Empty></div>}
         </section>
         <section>
           <div className="section-head"><h2>Последние операции</h2><button className="text-button" onClick={openHistory}>История <ArrowUpRight size={15}/></button></div>
-          <div className="panel grouped">{recent.length ? recent.map(row => <OperationRow key={row.id} row={row} category={data.categories.find(c => c.id === row.categoryId)}
-            member={data.members.find(m => m.id === row.memberId)} onClick={() => openOperation(row)}/>) :
+          <div className="panel grouped">{recent.length ? recent.map(row => {
+            const receipt = row.receiptId ? receipts.get(row.receiptId) : undefined
+            const member = data.members.find(m => m.id === row.memberId)
+            return receipt ? <ReceiptHistoryRow key={receipt.id} receipt={receipt} member={member} onClick={() => openOperation(row)}/> :
+              <OperationRow key={row.id} row={row} category={data.categories.find(c => c.id === row.categoryId)}
+                member={member} author={data.members.find(m => m.id === row.authorId)} onClick={() => openOperation(row)}/>
+          }) :
             <Empty title="Операций пока нет" text="Добавьте первый расход или доход."/>}</div>
         </section>
       </aside>

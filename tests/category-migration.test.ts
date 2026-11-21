@@ -33,7 +33,7 @@ it('обновляет реальную схему Dexie v1 и сохраняе�
 
   const inspect = new Dexie('budget-local')
   await inspect.open()
-  expect(inspect.verno).toBe(2)
+  expect(inspect.verno).toBe(4)
   expect(await inspect.table('categories').get('food')).toEqual(upgraded.categories[0])
   inspect.close()
 })

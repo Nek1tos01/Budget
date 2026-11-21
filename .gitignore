@@ -3,4 +3,32 @@ dist/
 *.tsbuildinfo
 playwright-report/
 test-results/
+test-results-cloud/
+test-results-receipt-media/
 
+
+.wrangler/
+.dev.vars*
+.env*
+!.env.example
+cpp/budget-core/build*/
+
+/build/
+
+# Локальные базы, бэкапы и диагностические файлы
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.sql.gz
+*.dump
+*.log
+coverage/
+backups/
+exports/
+captures/
+.tmp/
+docs/screenshots/**
+!docs/screenshots/demo/
+!docs/screenshots/demo/*.png

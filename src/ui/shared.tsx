@@ -3,14 +3,15 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { animate, motion, useMotionValue, useMotionValueEvent, useReducedMotion } from 'motion/react'
 import { ArrowDownLeft, ArrowUpRight, ChevronLeft, ChevronRight, Wallet, X } from 'lucide-react'
 import { DEFAULT_CATEGORY_EMOJI } from '../domain/emoji'
-import { money, usageLabel } from '../domain/engine'
+import { money, percentChange, usageLabel } from '../domain/engine'
+import type { WorkspaceScope } from '../cloud/client'
 import type { Category, Member, Summary, Transaction } from '../domain/models'
 
 export const colors = ['#a092ff','#f3ab72','#74b5ff','#e992c6','#71d4b6','#f1c86c','#ee838d','#98c678']
 export const spring = { type: 'spring', stiffness: 400, damping: 36 } as const
 export const sheetSpring = { type: 'spring', stiffness: 355, damping: 36, mass: .85 } as const
 export const screenTransition = { duration: .19, ease: [.22, 1, .36, 1] } as const
-export type Mutate = (work: () => Promise<unknown>, success?: string) => Promise<boolean>
+export type Mutate = (work: (scope: WorkspaceScope) => Promise<unknown>, success?: string) => Promise<boolean>
 
 export function CategoryIcon({ emoji, size = 26, income = false }: { emoji?: string; size?: number; income?: boolean }) {
   if (income) return <span aria-hidden="true" className="category-icon income-icon"><ArrowDownLeft size={20} strokeWidth={1.75}/></span>
@@ -79,6 +80,24 @@ export function Segmented<T extends string>({ items, value, onChange, label }: {
   </div>
 }
 
+export function Toggle({ label, description, checked, onChange, disabled }: {
+  label: string; description?: string; checked: boolean; onChange: (checked: boolean) => void; disabled?: boolean
+}) {
+  const id = useId()
+  return <label className="setting-toggle">
+    <span><strong id={id}>{label}</strong>{description && <small id={id + '-description'}>{description}</small>}</span>
+    <span className="glass-switch">
+      <input type="checkbox" role="switch" aria-labelledby={id} aria-describedby={description ? id + '-description' : undefined}
+        checked={checked} onChange={event => onChange(event.currentTarget.checked)} disabled={disabled}/>
+      <motion.i aria-hidden="true" initial={false} animate={{ x: checked ? 17 : 0 }} transition={spring}/>
+    </span>
+  </label>
+}
+
+export function MonthlyOnlyBadge() {
+  return <span className="monthly-only-badge">Только месяц</span>
+}
+
 export function PeriodArrows({ label, offset, onChange }: { label: string; offset: number; onChange: (offset: number) => void }) {
   return <div className="period-arrows">
     <button type="button" className="icon-button subtle" aria-label="Предыдущий период" onClick={() => onChange(offset - 1)} disabled={offset <= -1200}><ChevronLeft size={18}/></button>
@@ -87,8 +106,8 @@ export function PeriodArrows({ label, offset, onChange }: { label: string; offse
   </div>
 }
 
-export function Sheet({ title, description, onClose, children, footer, className = '' }: {
-  title: string; description?: string; onClose: () => void; children: ReactNode | ((close: () => void) => ReactNode); footer?: ReactNode; className?: string
+export function Sheet({ title, description, onClose, onRequestClose, children, footer, dismissible = true, className = '', layoutId }: {
+  title: string; description?: string; onClose: () => void; onRequestClose?: () => void; children: ReactNode | ((close: () => void) => ReactNode); footer?: ReactNode; dismissible?: boolean; className?: string; layoutId?: string
 }) {
   const [open, setOpen] = useState(true)
   const closing = useRef(false)
@@ -114,7 +133,8 @@ export function Sheet({ title, description, onClose, children, footer, className
     }
   }, [])
   function close() {
-    if (closing.current) return
+    if (!dismissible || closing.current) return
+    if (onRequestClose) { onRequestClose(); return }
     closing.current = true
     if (reduced) { onClose(); return }
     setOpen(false)
@@ -127,10 +147,11 @@ export function Sheet({ title, description, onClose, children, footer, className
         const container = event.target instanceof HTMLElement ? event.target : null
         container?.querySelector<HTMLElement>('.sheet-close')?.focus({ preventScroll: true })
       }}>
-        <motion.div ref={sheetRef} initial={reduced ? false : { y: '80%', opacity: .7 }} animate={{ y: open ? 0 : '100%', opacity: open ? 1 : .7 }}
+        <motion.div ref={sheetRef} layoutId={reduced ? undefined : layoutId} style={{ borderRadius: '28px 28px 0 0' }}
+          initial={reduced ? false : { y: layoutId ? 0 : '80%', opacity: layoutId ? .95 : .7 }} animate={{ y: open ? 0 : '100%', opacity: open ? 1 : .7 }}
           transition={reduced ? { duration: 0 } : open ? sheetSpring : screenTransition} onAnimationComplete={() => { if (!open) onClose() }}>
           <div className="sheet-handle"/><div className="sheet-head">
-            <Dialog.Title>{title}</Dialog.Title><Dialog.Close className="icon-button sheet-close" aria-label="Закрыть"><X size={19}/></Dialog.Close>
+            <Dialog.Title>{title}</Dialog.Title><Dialog.Close disabled={!dismissible} className="icon-button sheet-close" aria-label="Закрыть"><X size={19}/></Dialog.Close>
           </div>
           <Dialog.Description className={description ? 'sheet-description' : 'sr-only'}>{description || title}</Dialog.Description>
           <div className="sheet-content">{typeof children === 'function' ? children(close) : children}</div>
@@ -145,13 +166,14 @@ export function Empty({ title, text, children }: { title: string; text: string; 
   return <div className="empty"><span className="empty-icon"><Wallet size={25}/></span><h3>{title}</h3><p>{text}</p>{children}</div>
 }
 
-export function OperationRow({ row, category, member, onClick }: {
-  row: Transaction; category?: Category; member?: Member; onClick: () => void
+export function OperationRow({ row, category, member, author, onClick }: {
+  row: Transaction; category?: Category; member?: Member; author?: Member; onClick: () => void
 }) {
   const title = row.type === 'expense' ? row.note || category?.name || 'Расход' : row.source || 'Доход'
-  const metadata = [row.type === 'expense' ? category?.name : 'Доход', member?.name].filter(Boolean).join(' · ')
+  const metadata = [row.type === 'expense' ? category?.name : 'Доход', member?.name, author ? 'Добавил ' + author.name : null].filter(Boolean).join(' · ')
   return <button type="button" className="operation-row" onClick={onClick}>
-    <CategoryIcon emoji={category?.emoji} income={row.type === 'income'}/><span className="row-body"><strong>{title}</strong><small>{metadata}</small></span>
+    <CategoryIcon emoji={category?.emoji} income={row.type === 'income'}/><span className="row-body"><strong>{title}</strong><small>{metadata}</small>
+      {row.budgetScope === 'monthly_only' && <MonthlyOnlyBadge/>}</span>
     <strong className={`row-amount ${row.type === 'income' ? 'positive' : ''}`}><MoneyText text={(row.type === 'income' ? '+' : '−') + money(row.amount)}/></strong>
     <ChevronRight className="row-chevron" size={16}/>
   </button>
@@ -159,7 +181,7 @@ export function OperationRow({ row, category, member, onClick }: {
 
 export function ChangeBadge({ current, previous }: { current: number; previous: number }) {
   if (!previous) return null
-  const delta = Math.round((current - previous) / previous * 100)
+  const delta = percentChange(current, previous)
   if (!delta) return <span className="change-badge">0%</span>
   const Icon = delta < 0 ? ArrowDownLeft : ArrowUpRight
   return <span className={`change-badge ${delta < 0 ? 'positive' : 'negative'}`}>{delta < 0 ? '−' : '+'}{Math.abs(delta)}% <Icon size={13}/></span>

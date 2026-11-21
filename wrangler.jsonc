@@ -1,0 +1,27 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "budget-nikita",
+	"pages_build_output_dir": "./dist",
+	"compatibility_date": "2026-01-15",
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "budget",
+			// Keep this ID stable so local development reuses the same D1 database.
+			"database_id": "00000000-0000-4000-8000-000000000001",
+			"migrations_dir": "migrations"
+		}
+	],
+	"env": {
+		"production": {
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "budget",
+					"database_id": "0d543604-24be-40f5-99d6-9414bc673ac1",
+					"migrations_dir": "migrations"
+				}
+			]
+		}
+	}
+}

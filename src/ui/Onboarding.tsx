@@ -1,13 +1,14 @@
 import { useState } from 'react'
 import { ArrowRight, CalendarDays, Check, ChevronLeft, Wallet } from 'lucide-react'
 import { AnimatePresence, motion } from 'motion/react'
+import type { CloudAction } from './Cloud'
 import { newSnapshot } from '../data/demo'
 import { repository } from '../data/repository'
 import { parseMoney } from '../domain/engine'
 import { WeekDays } from './Settings'
 import { CategoryIcon, Ring, type Mutate } from './shared'
 
-export function Onboarding({ mutate, now }: { mutate: Mutate; now: number }) {
+export function Onboarding({ mutate, now, openCloud }: { mutate: Mutate; now: number; openCloud: (action: CloudAction) => void }) {
   const [step, setStep] = useState(0)
   const [draft, setDraft] = useState(() => newSnapshot(false, now))
   const [week, setWeek] = useState('20000')
@@ -17,7 +18,7 @@ export function Onboarding({ mutate, now }: { mutate: Mutate; now: number }) {
   const [busy, setBusy] = useState(false)
   async function begin(demo: boolean) {
     setBusy(true)
-    if (!await mutate(() => repository.replace(demo ? newSnapshot(true, now) : { ...draft, categories: draft.categories.filter(item => active.includes(item.id)) }, true))) setBusy(false)
+    if (!await mutate(scope => repository.replace(demo ? newSnapshot(true, now) : { ...draft, categories: draft.categories.filter(item => active.includes(item.id)) }, true, scope))) setBusy(false)
   }
   return <main className="welcome">
     <div className="welcome-brand"><span className="brand-icon"><Wallet size={20}/></span> Бюджет</div>
@@ -31,6 +32,9 @@ export function Onboarding({ mutate, now }: { mutate: Mutate; now: number }) {
           {step === 0 ? <div className="welcome-step"><div><h1>Бюджет для двоих</h1><p>Общие лимиты, расходы и финансовая неделя, которая начинается в удобный вам день.</p></div>
             <button className="primary full" disabled={busy} onClick={() => setStep(1)}>Настроить бюджет <ArrowRight size={18}/></button>
             <button className="secondary full" disabled={busy} onClick={() => void begin(true)}>Открыть демо-бюджет</button>
+            <div className="welcome-cloud"><button className="text-button" onClick={() => openCloud('households')}>Создать общий бюджет</button>
+              <button className="text-button" onClick={() => openCloud('join')}>Присоединиться</button></div>
+            <button className="text-button self-start" onClick={() => openCloud('recover')}>Восстановить доступ</button>
           </div> : <form className="welcome-step" onSubmit={event => {
             event.preventDefault()
             setError('')

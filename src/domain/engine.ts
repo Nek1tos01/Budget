@@ -1,7 +1,9 @@
 import { Temporal } from '@js-temporal/polyfill'
-import type { BudgetEngine, Day, Summary } from './models'
+import { budgetWasm } from './budget-wasm'
+import { MAX_MONEY, type BudgetEngine, type Day, type Summary } from './models'
 
-export const MAX_MONEY = 999_999_999_999
+export { addMoney, initializeBudgetWasm as initializeBudgetEngine, percentChange, roundUpToRuble, usagePercent } from './budget-wasm'
+export { MAX_MONEY } from './models'
 export const weekdays = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
 export const weekdayShort = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
 export const weekdaysReset = ['в понедельник', 'во вторник', 'в среду', 'в четверг', 'в пятницу', 'в субботу', 'в воскресенье']
@@ -23,16 +25,11 @@ export function parseMoney(input: string): number | null {
   const clean = input.trim().replace(/[ \u00a0\u202f]/g, '').replace('.', ',')
   if (!/^(?:\d+(?:,\d{0,2})?|,\d{1,2})$/.test(clean)) return null
   const [whole, fraction = ''] = clean.split(',')
-  const amount = Number(whole) * 100 + Number(fraction.padEnd(2, '0'))
+  const amount = Number(whole + fraction.padEnd(2, '0'))
   return Number.isSafeInteger(amount) && amount <= MAX_MONEY ? amount : null
 }
 
 const wholeCurrency = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 })
-export function addMoney(a: number, b: number) {
-  const total = a + b
-  if (!Number.isSafeInteger(total)) throw new Error('Общий оборот превышает точность хранения копеек.')
-  return total
-}
 export function amountText(cents: number) {
   const absolute = Math.abs(cents)
   const fraction = absolute % 100
@@ -68,32 +65,12 @@ export const labelPeriod = (period: ReturnType<BudgetEngine['period']>, year: st
 
 export const engine: BudgetEngine = {
   period(kind, now, timezone, weekStart, offset = 0) {
-    const today = Temporal.PlainDate.from(toDay(now, timezone))
-    const start = kind === 'month'
-      ? today.with({ day: 1 }).add({ months: offset })
-      : today.add({ days: -((today.dayOfWeek - weekStart + 7) % 7) + offset * 7 })
-    const end = start.add(kind === 'month' ? { months: 1 } : { days: 7 })
-    return { kind, start: start.toString(), end: end.toString() }
+    return budgetWasm.period(kind, toDay(now, timezone), weekStart, offset)
   },
-  includes: (period, date) => date >= period.start && date < period.end,
-  summary(rows, period, limit) {
-    let spent = 0
-    let income = 0
-    for (const row of rows) {
-      if (!engine.includes(period, row.date)) continue
-      if (row.type === 'expense') spent = addMoney(spent, row.amount)
-      else income = addMoney(income, row.amount)
-    }
-    return { spent, income, limit, remaining: limit - spent, percent: limit ? Math.round(spent / limit * 100) : null }
-  },
-  breakdown(rows, period, group) {
-    const amounts = new Map<string, number>()
-    for (const row of rows) {
-      const id = row[group]
-      if (id && row.type === 'expense' && engine.includes(period, row.date)) amounts.set(id, addMoney(amounts.get(id) ?? 0, row.amount))
-    }
-    return [...amounts].map(([id, amount]) => ({ id, amount })).sort((a, b) => b.amount - a.amount)
-  },
+  includes: budgetWasm.includes,
+  summary: budgetWasm.summary,
+  forecast: budgetWasm.forecast,
+  breakdown: budgetWasm.breakdown,
   nextReset(now, timezone, weekStart) {
     return Temporal.PlainDate.from(engine.period('week', now, timezone, weekStart).end)
       .toZonedDateTime(timezone).epochMilliseconds

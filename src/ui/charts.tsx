@@ -16,7 +16,7 @@ function smooth(points: { x: number; y: number }[]) {
   }, `M ${first.x},${first.y}`)
 }
 
-export function Trend({ values, label, interactive = true }: { values: Point[]; label: string; interactive?: boolean }) {
+export function Trend({ values, label, interactive = true, bars = false }: { values: Point[]; label: string; interactive?: boolean; bars?: boolean }) {
   const id = useId()
   const [index, setIndex] = useState<number | null>(null)
   const selected = Math.min(index ?? values.length - 1, values.length - 1)
@@ -34,12 +34,16 @@ export function Trend({ values, label, interactive = true }: { values: Point[]; 
       <desc>{values.map(value => value.label + ' ' + money(value.amount)).join(', ')}</desc>
       <defs><linearGradient id={id} x1="0" y1="0" x2="0" y2="1"><stop stopColor="var(--accent)" stopOpacity=".17"/><stop offset="1" stopColor="var(--accent)" stopOpacity="0"/></linearGradient></defs>
       {[50, 106].map(y => <path key={y} d={`M 0 ${y} H ${width}`} className="chart-grid"/>)}
-      <motion.path d={area} fill={`url(#${id})`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .45 }}/>
+      {bars ? points.map((point, i) => {
+        const column = width / points.length
+        return <rect key={i} className={i === selected ? 'trend-bar selected' : 'trend-bar'}
+          x={column * (i + .18)} y={point.y} width={column * .64} height={height - point.y} rx="8"/>
+      }) : <><motion.path d={area} fill={`url(#${id})`} initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .45 }}/>
       <motion.path d={line} fill="none" stroke="var(--chart-line)" strokeWidth="2.8" strokeLinecap="round" vectorEffect="non-scaling-stroke"
         initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: .52 }}/>
       <path d={`M ${points[selected].x} ${points[selected].y} V ${height}`} className="chart-marker"/>
       <path d={`M ${points[selected].x} ${points[selected].y} h .01`} className="chart-point-halo" strokeWidth="13" strokeLinecap="round" vectorEffect="non-scaling-stroke"/>
-      <path d={`M ${points[selected].x} ${points[selected].y} h .01`} className="chart-point" strokeWidth="7" strokeLinecap="round" vectorEffect="non-scaling-stroke"/>
+      <path d={`M ${points[selected].x} ${points[selected].y} h .01`} className="chart-point" strokeWidth="7" strokeLinecap="round" vectorEffect="non-scaling-stroke"/></>}
     </svg>
     {interactive ? <div className="trend-labels">
       {values.map((value, i) => <button key={i} type="button" className={i === selected ? 'selected' : ''} aria-pressed={i === selected}
